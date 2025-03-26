@@ -44,7 +44,7 @@ lfp-extraction-tool
 
 1. First clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/MingzeDou/LFP-extraction-electrophysiology
 cd lfp-extraction-tool
 ```
 
