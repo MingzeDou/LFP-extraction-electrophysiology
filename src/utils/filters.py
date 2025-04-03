@@ -68,9 +68,9 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
         filtered_data = xp.zeros_like(data_xp)
         final_zi_list = [] # Store list of final states per channel (lfilter state shape is different)
 
-        # Calculate default single-channel lfilter zi on CPU
+        # Calculate default single-channel lfilter zi *on GPU* using GPU coefficients
         # Note: lfilter_zi requires 'a' and 'b' coefficients
-        zi_single_np = lfilter_zi(b_np, a_np) # Use the imported lfilter_zi
+        zi_single_gpu = lfilter_zi(b_gpu, a_gpu) # Use the imported lfilter_zi with GPU arrays
 
         for ch in range(num_channels):
             channel_data = data_xp[:, ch] # Get single channel (1D GPU array)
@@ -86,15 +86,15 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
                  continue
 
             if initial_zi is None:
-                # First chunk for this channel, create default zi on GPU, scaled by first sample
-                ch_initial_zi = xp.asarray(np.ascontiguousarray(zi_single_np)) * channel_data[0]
+                # First chunk for this channel, use default zi calculated on GPU, scaled by first sample
+                ch_initial_zi = zi_single_gpu * channel_data[0]
             elif isinstance(initial_zi, list) and ch < len(initial_zi):
                  # Subsequent chunk, use state from previous chunk (already on GPU)
                  ch_initial_zi = initial_zi[ch]
             else:
                  # Fallback if initial_zi format is unexpected
                  print(f"Warning: Unexpected initial_zi format for channel {ch}. Using default.")
-                 ch_initial_zi = xp.asarray(np.ascontiguousarray(zi_single_np)) * channel_data[0]
+                 ch_initial_zi = zi_single_gpu * channel_data[0]
 
             # Filter single channel on GPU using lfilter
             try:
@@ -107,8 +107,8 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
                 # Fallback: write zeros and default state? Or raise error?
                 # For now, let's write zeros and append default state to avoid crashing
                 filtered_data[:, ch] = 0
-                default_zi_gpu = xp.asarray(np.ascontiguousarray(zi_single_np)) * 0.0
-                final_zi_list.append(default_zi_gpu)
+                # Use the already calculated default GPU state
+                final_zi_list.append(zi_single_gpu * 0.0)
 
 
         # Return multi-channel GPU array and list of GPU states
