@@ -143,9 +143,8 @@ def low_pass_filter(data: Array, cutoff: float, fs: float, initial_zi: Optional[
         if data.ndim > 1:
              n_channels = data.shape[axis * -1 + 1]
              expected_zi_shape_multi: Tuple[int, int, int] = (n_sections, 2, n_channels)
-             # Log warning instead of raising error for unexpected shape
              if initial_zi.shape != expected_zi_shape_multi:
-                 logger.warning(f"Unexpected initial_zi shape. Expected {expected_zi_shape_multi}, got {initial_zi.shape}. Proceeding anyway.")
+                 raise ValueError(f"Expected initial_zi shape {expected_zi_shape_multi} for multi-channel, got {initial_zi.shape}")
         # Correct indentation: This line belongs to the outer else block
         zi_filt = initial_zi # Use the provided initial state
 
