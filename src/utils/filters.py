@@ -70,9 +70,9 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
         # Calculate zi using SciPy on CPU first
         zi_single_np = scipy.signal.sosfilt_zi(sos_np) # Shape (n_sections, 2)
         # Repeat state for each channel
-        zi_np = np.repeat(zi_single_np[:, :, np.newaxis], num_channels, axis=2)
-        # Transfer to GPU if needed
-        initial_zi = xp.asarray(zi_np)
+        zi_np = np.repeat(zi_single_np[:, :, np.newaxis], num_channels, axis=2) # Shape (n_sections, 2, num_channels)
+        # Ensure C-contiguity before transferring to GPU, as CuPy might be sensitive to memory layout
+        initial_zi = xp.asarray(np.ascontiguousarray(zi_np))
 
     # Apply filter along the time axis (axis=0)
     # Both scipy.signal.sosfilt and cupyx.scipy.signal.sosfilt expect
