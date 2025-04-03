@@ -81,22 +81,20 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
                  print(f"Warning: Skipping empty channel {ch} in CuPy filter path.")
                  # Need to append a valid state placeholder if skipping
                  # Create default zi on GPU for the next iteration
-                 # Use the calculated zi_single_gpu directly
-                 final_zi_list.append(zi_single_gpu * 0.0)
+                 default_zi_gpu = xp.asarray(np.ascontiguousarray(zi_single_np)) * 0.0 # Use 0 if first sample not available
+                 final_zi_list.append(default_zi_gpu)
                  continue
 
             if initial_zi is None:
-                # First chunk for this channel, use default zi calculated on GPU (unscaled)
-                # Removing scaling by channel_data[0] as per previous attempt
-                ch_initial_zi = zi_single_gpu
+                # First chunk for this channel, use default zi calculated on GPU, scaled by first sample
+                ch_initial_zi = zi_single_gpu * channel_data[0]
             elif isinstance(initial_zi, list) and ch < len(initial_zi):
                  # Subsequent chunk, use state from previous chunk (already on GPU)
                  ch_initial_zi = initial_zi[ch]
             else:
                  # Fallback if initial_zi format is unexpected
                  print(f"Warning: Unexpected initial_zi format for channel {ch}. Using default.")
-                 # Use unscaled default state as fallback
-                 ch_initial_zi = zi_single_gpu
+                 ch_initial_zi = zi_single_gpu * channel_data[0]
 
             # Filter single channel on GPU using lfilter
             try:

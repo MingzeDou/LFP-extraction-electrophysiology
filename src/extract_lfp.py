@@ -50,12 +50,10 @@ def process_chunk(data_chunk_xp, filter_states=None):
     """
     Process a chunk of data (already on CPU/GPU): filter then downsample.
     Relies on filter state propagation for continuity between chunks.
-    Uses lfilter on GPU path due to sosfilt issues.
 
     Args:
         data_chunk_xp: Input data chunk (NumPy or CuPy array, float32, samples x channels)
-        filter_states: Initial filter state from the previous chunk (optional).
-                       List of arrays for CuPy lfilter, single array for SciPy sosfilt.
+        filter_states: Initial filter state from the previous chunk (optional)
 
     Returns:
         tuple: (processed_data (xp array), next_filter_state)
@@ -63,26 +61,25 @@ def process_chunk(data_chunk_xp, filter_states=None):
     # Calculate cutoff frequency (ensure it's not too high)
     cutoff = min(TARGET_SAMPLING_RATE * 0.45, CUTOFF_FREQUENCY)
 
-    # 1. Filter first at original sample rate using the appropriate function
-    # low_pass_filter uses lfilter on GPU, sosfilt on CPU
+    # 1. Filter first at original sample rate using the appropriate array module (xp)
+    # The updated low_pass_filter handles multi-channel directly and accepts xp
     filtered_data, next_filter_state = low_pass_filter(
         data_chunk_xp, cutoff, SAMPLE_RATE_ORIGINAL, xp, initial_zi=filter_states
-    ) # filter_states format depends on xp
+    )
 
     # 2. Then downsample using the appropriate array module (xp)
-    # downsample handles multi-channel directly and accepts xp
+    # The updated downsample handles multi-channel directly and accepts xp
     downsampled_data = downsample(
         filtered_data, TARGET_SAMPLING_RATE, SAMPLE_RATE_ORIGINAL, xp
     )
 
-    # Return the downsampled data (on same device as filtered_data) and the next filter state
     return downsampled_data, next_filter_state
 
 
 def extract_lfp(input_file, output_file, chunk_size, num_channels):
     """
     Extract LFP from raw data file (.dat), handling chunking and GPU acceleration.
-
+    
     Args:
         input_file: Path to input raw data file (.dat)
         output_file: Path to output LFP file
@@ -100,9 +97,9 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
 
     print(f"Processing data file: {input_file} to {output_file}")
     if GPU_AVAILABLE:
-        print(f"Using GPU acceleration via CuPy (lfilter).")
+        print(f"Using GPU acceleration via CuPy.")
     else:
-        print("Using CPU (NumPy) for processing (sosfilt).")
+        print("Using CPU (NumPy) for processing.")
 
     # Data type and bytes per sample/frame
     dtype = np.int16
@@ -119,7 +116,7 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
     bytes_processed = 0
 
     # Initialize filter state (will be managed by low_pass_filter)
-    filter_states = None # Will become list for GPU, array for CPU
+    filter_states = None
 
     with open(input_file, 'rb') as f_in, open(output_file, 'wb') as f_out:
         chunk_count = 0
@@ -160,39 +157,25 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
                 except Exception as e:
                     print(f"Error transferring chunk {chunk_count} to GPU: {e}. Falling back to NumPy for this chunk.")
                     data_chunk_xp = data_chunk_float # Use the NumPy float version
-                    current_xp = np # Ensure xp reflects NumPy for this chunk processing
-                    # We might need to handle filter state conversion if switching mid-stream
-                    # For simplicity, assume we stick to CPU if transfer fails once.
-                    # A more robust solution might try GPU again later.
-                    print("Processing will continue on CPU.")
-                    GPU_AVAILABLE = False # Disable GPU for subsequent chunks
-                    xp = np
-                else:
-                    current_xp = xp # Use CuPy
+                    # Consider disabling GPU for future chunks if errors persist
             else:
                 data_chunk_xp = data_chunk_float # Already a NumPy array
-                current_xp = np # Use NumPy
 
             # --- Process Chunk ---
             # Pass the xp array (CPU or GPU) and current filter state
-            # process_chunk uses the correct filter (lfilter GPU / sosfilt CPU) via low_pass_filter
-            lfp_chunk_processed, filter_states = process_chunk(data_chunk_xp, filter_states)
+            lfp_chunk_xp, filter_states = process_chunk(data_chunk_xp, filter_states)
 
             # --- Data Conversion and Writing ---
             # Convert back to int16 for storage
-            # If processed data is on GPU, transfer back to CPU first
-            # Check if current_xp is CuPy and the result is actually a CuPy array
-            if current_xp is cp and hasattr(lfp_chunk_processed, 'device'):
+            # If data is on GPU, transfer back to CPU first
+            if GPU_AVAILABLE and xp is cp:
                 try:
-                    lfp_chunk_np = cp.asnumpy(lfp_chunk_processed)
+                    lfp_chunk_np = cp.asnumpy(lfp_chunk_xp)
                 except Exception as e:
                      print(f"Error transferring chunk {chunk_count} result from GPU: {e}. Skipping write for this chunk.")
-                     # Clean up potentially remaining GPU array
-                     del lfp_chunk_processed
-                     if 'data_chunk_xp' in locals() and data_chunk_xp is not data_chunk_float: del data_chunk_xp
                      continue # Skip writing this chunk if transfer fails
             else:
-                lfp_chunk_np = lfp_chunk_processed # Already a NumPy array
+                lfp_chunk_np = lfp_chunk_xp # Already a NumPy array
 
             # Ensure it's the correct type before writing
             lfp_data_int16 = lfp_chunk_np.astype(dtype)
@@ -200,19 +183,14 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
 
             # --- Cleanup and Progress ---
             # Explicitly delete intermediate arrays to potentially help memory management
-            del data_chunk_np, data_chunk_float, lfp_chunk_np, lfp_data_int16
-            # Delete GPU arrays if they exist and are different from CPU versions
-            if 'data_chunk_xp' in locals() and data_chunk_xp is not data_chunk_float: del data_chunk_xp
-            if 'lfp_chunk_processed' in locals() and lfp_chunk_processed is not lfp_chunk_np: del lfp_chunk_processed
-
+            del data_chunk_np, data_chunk_float, data_chunk_xp, lfp_chunk_xp, lfp_chunk_np, lfp_data_int16
 
             chunk_count += 1
             if chunk_count % 10 == 0: # Report progress every 10 chunks
                 progress = (bytes_processed / file_size) * 100
                 print(f"Processed {chunk_count} chunks... ({progress:.1f}% complete)")
                 # Free GPU memory periodically if using GPU
-                # Check GPU_AVAILABLE flag which might have been turned off
-                if GPU_AVAILABLE and chunk_count % 50 == 0:
+                if GPU_AVAILABLE and chunk_count % 50 == 0: # Free every 50 chunks
                     free_gpu_memory()
 
     # Final GPU memory cleanup
