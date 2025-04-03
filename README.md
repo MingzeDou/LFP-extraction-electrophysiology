@@ -4,12 +4,14 @@
 The LFP Extraction Tool is designed to efficiently extract Local Field Potential (LFP) data from large electrophysiology recordings stored in .dat files. The tool down-samples the data to 1250 Hz and applies a low-pass filter at 450 Hz, ensuring that the resulting LFP data is suitable for further analysis.
 
 ## Features
-- Down-sampling of raw data from 30 kHz to 1250 Hz
-- Application of a low-pass filter at 450 Hz
-- Chunk processing to handle large files efficiently
-- Utilization of RTX A4000 GPU for accelerated computations
-- Memory-efficient processing of large datasets
-- Progress tracking during extraction
+- Efficient extraction of Local Field Potential (LFP) data from raw binary recordings.
+- Down-sampling of high-frequency raw data (e.g., 30 kHz) to a standard LFP rate (e.g., 1250 Hz).
+- Application of a **4th-order Butterworth low-pass filter** (default cutoff 450 Hz) for anti-aliasing and LFP isolation.
+- Chunk-based processing to handle large multi-gigabyte files with limited memory.
+- **GPU acceleration** using CuPy/CuPyX for filtering operations, significantly speeding up processing on compatible NVIDIA GPUs. Falls back gracefully to CPU (NumPy/SciPy) if GPU is unavailable.
+- Memory management utilities for GPU processing.
+- Progress tracking during extraction.
+- Includes a comprehensive validation script (`compare_files.py`).
 
 ## Project Structure
 ```
@@ -128,7 +130,19 @@ OUTPUT_FILE = "path/to/output.lfp"
 Important Notes:
 - The downsampling factor (original_rate/target_rate) must be an integer
 - Cutoff frequency should be less than half the target sampling rate (Nyquist)
-- Optimal chunk size depends on available GPU memory
+- Optimal chunk size depends on available CPU/GPU memory.
+
+## Algorithm Details
+
+The LFP extraction process involves the following steps applied to each chunk of data:
+
+1.  **Read Chunk:** A chunk of raw data (int16) is read from the input file.
+2.  **Overlap Handling:** An overlapping segment from the end of the *previous* chunk is prepended to the current chunk to ensure continuity during filtering.
+3.  **Type Conversion:** The int16 data is converted to float32.
+4.  **Filtering:** A **4th-order Butterworth low-pass filter** is applied to the chunk using second-order sections (SOS) for numerical stability. This step is performed on the GPU if CuPy/CuPyX is available and functional, otherwise on the CPU. Filter state is maintained across chunks.
+5.  **Overlap Removal:** The overlapping segment added in step 2 is removed from the *beginning* of the filtered chunk.
+6.  **Downsampling:** The filtered data is downsampled to the target LFP sampling rate by selecting every Nth sample (where N is the integer downsampling factor).
+7.  **Type Conversion & Save:** The resulting LFP chunk (float32) is clipped to the int16 range, converted back to int16, and written to the output file.
 
 ## Validation with compare_files.py
 
@@ -136,12 +150,17 @@ The LFP Extraction Tool includes a validation script that helps you verify the q
 
 ### Features of compare_files.py
 
-- Time domain comparison of raw and downsampled signals
-- Frequency domain analysis including power spectral density
-- Coherence analysis between original and extracted signals
-- Frequency band power comparison (Delta, Theta, Alpha, Beta, Gamma)
-- Signal-to-noise ratio (SNR) calculation
-- Detailed metrics and statistical comparison
+The validation script (`compare_files.py`) provides several analysis modes (`--analysis` flag):
+
+-   **`basic`**: Compares time-domain signals (raw vs LFP) for multiple channels and calculates correlations.
+-   **`detailed`**: Performs in-depth analysis for a single channel, including:
+    -   Time-domain comparison (Filtered Raw vs LFP File).
+    -   **Power Spectral Density (PSD) comparison**: Shows the effect of the low-pass filter on the raw signal spectrum.
+    -   **LFP PSD Aliasing Check**: Zooms into the PSD near the LFP Nyquist frequency to visually inspect for potential aliasing artifacts.
+    -   Magnitude Squared Coherence between the filtered raw signal and the final LFP signal.
+    -   Calculation of SNR and correlation metrics.
+-   **`frequency`**: Compares the power distribution across standard frequency bands (Delta, Theta, Alpha, Beta, Gamma, High Gamma) between the downsampled raw signal and the LFP signal.
+-   **`all`**: Runs all the above analyses (default).
 
 ### Using the validation tool
 
@@ -202,8 +221,8 @@ The analysis script generates both visual and numerical outputs:
 ## Performance Considerations
 
 1. **GPU vs CPU**:
-   - GPU acceleration provides 5-10x speedup
-   - CPU mode works but is slower
+   - **GPU acceleration (via CuPy/CuPyX) now applies to the filtering step**, which is often the most computationally intensive part. This can provide significant speedups (potentially 5-10x or more, depending on hardware and data size) compared to the CPU-only mode.
+   - The tool automatically detects and uses a compatible GPU if CuPy/CuPyX is installed correctly. Otherwise, it defaults to CPU processing using NumPy/SciPy.
 
 2. **Chunk Size**:
    - Larger chunks = better performance

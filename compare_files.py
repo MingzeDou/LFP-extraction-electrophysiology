@@ -8,6 +8,28 @@ import time
 import pandas as pd
 from tabulate import tabulate  # You may need to install this: pip install tabulate
 
+# Import necessary components from the LFP extraction tool source
+# Assuming compare_files.py is run from the project root directory
+try:
+    from src.utils.filters import low_pass_filter
+    from src.config import SAMPLE_RATE_ORIGINAL, TARGET_SAMPLING_RATE, CUTOFF_FREQUENCY
+except ImportError:
+    print("Warning: Could not import from src. Ensure this script is run from the project root.")
+    # Define fallbacks if run standalone (less accurate comparison)
+    SAMPLE_RATE_ORIGINAL = 30000
+    TARGET_SAMPLING_RATE = 1250
+    CUTOFF_FREQUENCY = 450
+    # Define a dummy low_pass_filter if needed
+    def low_pass_filter(data, cutoff, fs, initial_zi=None):
+        print("Warning: Using dummy low_pass_filter. Filter comparison plot will be inaccurate.")
+        # Simple placeholder filter (not accurate)
+        b, a = signal.butter(4, cutoff / (0.5 * fs), btype='low')
+        filtered_data = signal.lfilter(b, a, data)
+        # Dummy state matching expected output format
+        dummy_state = np.zeros((len(a)-1,)) if initial_zi is None else initial_zi
+        return filtered_data, dummy_state
+
+
 def compute_psd(signal_data, fs, nperseg=None):
     """
     Compute Power Spectral Density using Welch's method.
@@ -184,13 +206,19 @@ def compare_signals_detailed(dat_file, lfp_file, num_channels=384, num_samples=N
         channel: Channel to analyze in detail
     """
     print(f"Detailed analysis for channel {channel}")
-    
-    # Define parameters
-    raw_fs = 30000         # Raw data sampling rate (Hz)
-    lfp_fs = 1250          # LFP sampling rate (Hz)
+
+    # Use parameters imported from src.config or fallbacks
+    raw_fs = SAMPLE_RATE_ORIGINAL
+    lfp_fs = TARGET_SAMPLING_RATE
+    filter_cutoff = CUTOFF_FREQUENCY # The cutoff used during LFP extraction
     downsampling_factor = raw_fs / lfp_fs
-    scaling_factor = 0.195  # Typical Neuropixels scaling factor
-    
+    if downsampling_factor != int(downsampling_factor):
+        print(f"Warning: Downsampling factor ({downsampling_factor}) is not an integer. Comparison might be less accurate.")
+    downsampling_factor = int(downsampling_factor)
+
+    # Scaling factor (adjust if your system uses a different value)
+    scaling_factor = 0.195 # Typical Neuropixels scaling factor
+
     # Determine number of samples to read
     if num_samples is None:
         file_size = os.path.getsize(dat_file)
@@ -211,89 +239,138 @@ def compare_signals_detailed(dat_file, lfp_file, num_channels=384, num_samples=N
     lfp_data = lfp_data.reshape(-1, num_channels)
 
     # Get signal for the specified channel
-    raw_signal = raw_data[:, channel]
-    lfp_signal = lfp_data[:, channel]
-    
-    # Downsample raw data
-    indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-    downsampled_raw = raw_signal[indices]
-    
-    # Trim to match sizes
-    min_len = min(len(downsampled_raw), len(lfp_signal))
-    downsampled_raw = downsampled_raw[:min_len]
+    raw_signal_orig = raw_data[:, channel] # Raw signal at original sampling rate
+    lfp_signal = lfp_data[:, channel]      # LFP signal from file (already processed)
+
+    # --- Apply the same filtering used in LFP extraction to the raw segment ---
+    # Use the imported low_pass_filter function
+    # Note: This filters the segment in one go, ignoring chunking/overlap effects
+    # which might exist in the full LFP file generation. It's an approximation.
+    cutoff_freq_for_filter = min(filter_cutoff, raw_fs * 0.45) # Safety check
+    filtered_raw_signal, _ = low_pass_filter(raw_signal_orig.astype(np.float32), cutoff_freq_for_filter, raw_fs)
+
+    # --- Downsample the filtered raw signal using simple slicing (mimicking extract_lfp) ---
+    downsampled_filtered_raw = filtered_raw_signal[::downsampling_factor]
+
+    # --- Trim signals to the minimum length for comparison ---
+    min_len = min(len(downsampled_filtered_raw), len(lfp_signal))
+    downsampled_filtered_raw = downsampled_filtered_raw[:min_len]
     lfp_signal = lfp_signal[:min_len]
-    
-    # Time vectors for plotting
+    raw_signal_orig = raw_signal_orig[:min_len * downsampling_factor] # Keep corresponding raw segment
+    filtered_raw_signal = filtered_raw_signal[:min_len * downsampling_factor] # Keep corresponding filtered raw segment
+
+    # --- Time vectors for plotting ---
+    raw_time = np.arange(len(raw_signal_orig)) / raw_fs
     lfp_time = np.arange(min_len) / lfp_fs
-    
-    # Calculate metrics
-    correlation = np.corrcoef(downsampled_raw, lfp_signal)[0, 1]
-    snr_raw = compute_snr(downsampled_raw)
+
+    # --- Calculate Metrics (using downsampled filtered raw vs LFP file) ---
+    correlation = np.corrcoef(downsampled_filtered_raw, lfp_signal)[0, 1] if min_len > 1 else np.nan
+    snr_filt_raw = compute_snr(downsampled_filtered_raw)
     snr_lfp = compute_snr(lfp_signal)
-    
-    # Calculate PSDs
-    freqs_raw, psd_raw = compute_psd(downsampled_raw, lfp_fs)
-    freqs_lfp, psd_lfp = compute_psd(lfp_signal, lfp_fs)
-    
-    # Calculate coherence
-    freqs_coh, coherence = compute_coherence(downsampled_raw, lfp_signal, lfp_fs)
-    
-    # Create figure
-    fig = plt.figure(figsize=(14, 12))
-    gs = GridSpec(3, 2, figure=fig)
-    
-    # Time domain plot
+
+    # --- Calculate PSDs ---
+    nperseg_raw = min(len(raw_signal_orig), raw_fs * 2) # Use ~2s window for raw PSD
+    nperseg_lfp = min(len(lfp_signal), lfp_fs * 2)     # Use ~2s window for LFP PSD
+
+    freqs_orig_raw, psd_orig_raw = compute_psd(raw_signal_orig, raw_fs, nperseg=nperseg_raw)
+    freqs_filt_raw, psd_filt_raw = compute_psd(filtered_raw_signal, raw_fs, nperseg=nperseg_raw)
+    freqs_lfp, psd_lfp = compute_psd(lfp_signal, lfp_fs, nperseg=nperseg_lfp)
+
+    # --- Calculate Coherence (between downsampled filtered raw and LFP file) ---
+    freqs_coh, coherence = compute_coherence(downsampled_filtered_raw, lfp_signal, lfp_fs, nperseg=nperseg_lfp)
+
+    # --- Create Figure ---
+    fig = plt.figure(figsize=(15, 16)) # Increased height
+    gs = GridSpec(4, 2, figure=fig) # Changed to 4 rows
+
+    # --- Plotting ---
+    # 1. Time domain plot (Downsampled Filtered Raw vs LFP File)
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(lfp_time[:min_len], downsampled_raw, label='Raw downsampled', alpha=0.7)
-    ax1.plot(lfp_time[:min_len], lfp_signal, label='LFP file', alpha=0.7)
+    ax1.plot(lfp_time, downsampled_filtered_raw, label='Raw (Filtered & Downsampled)', alpha=0.7)
+    ax1.plot(lfp_time, lfp_signal, label='LFP File Signal', alpha=0.7)
     ax1.set_title(f'Channel {channel} - Time Domain Comparison', fontsize=14)
     ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('Signal')
+    ax1.set_ylabel('Signal (scaled)')
     ax1.legend()
     ax1.grid(True)
-    
-    # PSD plots
+
+    # 2. PSD of Raw vs Filtered Raw (at original sample rate)
     ax2 = fig.add_subplot(gs[1, 0])
-    ax2.semilogy(freqs_raw, psd_raw, label='Raw downsampled')
-    ax2.set_title('Power Spectral Density - Raw', fontsize=14)
+    ax2.semilogy(freqs_orig_raw, psd_orig_raw, label='Original Raw', alpha=0.8)
+    ax2.semilogy(freqs_filt_raw, psd_filt_raw, label=f'Raw Filtered ({cutoff_freq_for_filter:.0f} Hz LP)', alpha=0.8)
+    ax2.set_title('Filter Effect on Raw Signal PSD', fontsize=14)
     ax2.set_xlabel('Frequency (Hz)')
     ax2.set_ylabel('PSD [V**2/Hz]')
-    ax2.set_xlim([0, lfp_fs/2])
+    ax2.set_xlim([0, raw_fs / 2])
+    ax2.axvline(filter_cutoff, color='r', linestyle='--', label=f'Target Cutoff ({filter_cutoff} Hz)')
+    ax2.axvline(lfp_fs / 2, color='g', linestyle=':', label=f'LFP Nyquist ({lfp_fs/2} Hz)')
+    ax2.legend()
     ax2.grid(True)
-    
+
+    # 3. PSD of Final LFP Signal (Zoomed near Nyquist for Aliasing Check)
     ax3 = fig.add_subplot(gs[1, 1])
-    ax3.semilogy(freqs_lfp, psd_lfp, label='LFP file')
-    ax3.set_title('Power Spectral Density - LFP', fontsize=14)
+    ax3.semilogy(freqs_lfp, psd_lfp, label='LFP File Signal')
+    ax3.set_title('LFP File PSD (Aliasing Check)', fontsize=14)
     ax3.set_xlabel('Frequency (Hz)')
     ax3.set_ylabel('PSD [V**2/Hz]')
-    ax3.set_xlim([0, lfp_fs/2])
+    # Zoom near LFP Nyquist frequency
+    nyquist_lfp = lfp_fs / 2
+    zoom_range = nyquist_lfp * 0.1 # Look at the top 10% of the LFP band
+    ax3.set_xlim([nyquist_lfp - zoom_range, nyquist_lfp])
+    # Adjust y-limits to see potential peaks near Nyquist
+    if len(psd_lfp[freqs_lfp > nyquist_lfp - zoom_range]) > 0:
+         min_psd_zoom = np.min(psd_lfp[freqs_lfp > nyquist_lfp - zoom_range])
+         max_psd_zoom = np.max(psd_lfp[freqs_lfp > nyquist_lfp - zoom_range])
+         ax3.set_ylim([min_psd_zoom * 0.1, max_psd_zoom * 10]) # Log scale adjustment
+    ax3.axvline(nyquist_lfp, color='g', linestyle=':', label=f'LFP Nyquist ({nyquist_lfp} Hz)')
+    ax3.legend()
     ax3.grid(True)
-    
-    # Coherence plot
-    ax4 = fig.add_subplot(gs[2, 0])
+
+
+    # 4. Coherence plot (Downsampled Filtered Raw vs LFP File)
+    ax4 = fig.add_subplot(gs[2, 0]) # Moved to row 3
     ax4.plot(freqs_coh, coherence)
-    ax4.set_title('Magnitude Squared Coherence', fontsize=14)
+    ax4.set_title('Coherence (Filtered Raw vs LFP File)', fontsize=14)
     ax4.set_xlabel('Frequency (Hz)')
     ax4.set_ylabel('Coherence')
     ax4.set_ylim([0, 1.1])
-    ax4.set_xlim([0, lfp_fs/2])
+    ax4.set_xlim([0, lfp_fs / 2])
     ax4.grid(True)
-    
-    # Summary statistics
-    ax5 = fig.add_subplot(gs[2, 1])
+
+    # 5. Summary statistics
+    ax5 = fig.add_subplot(gs[2, 1]) # Moved to row 3
     ax5.axis('off')
+    # Calculate mean coherence below filter cutoff for a more relevant metric
+    mean_coherence_passband = np.mean(coherence[freqs_coh < filter_cutoff]) if any(freqs_coh < filter_cutoff) else np.nan
+
     summary_text = (
-        f"Summary Statistics:\n\n"
-        f"Correlation: {correlation:.3f}\n"
-        f"SNR (Raw): {snr_raw:.2f} dB\n"
-        f"SNR (LFP): {snr_lfp:.2f} dB\n"
-        f"Mean Coherence: {np.mean(coherence):.3f}\n"
-        f"Median Coherence: {np.median(coherence):.3f}\n"
-        f"Max Coherence: {np.max(coherence):.3f} at {freqs_coh[np.argmax(coherence)]:.1f} Hz"
+        f"Summary Statistics (Ch {channel}):\n\n"
+        f"Comparison: Filtered Raw vs LFP File\n"
+        f"Correlation: {correlation:.4f}\n"
+        f"SNR (Filt Raw): {snr_filt_raw:.2f} dB\n"
+        f"SNR (LFP File): {snr_lfp:.2f} dB\n\n"
+        f"Coherence Metrics:\n"
+        f" Mean (0-{filter_cutoff:.0f}Hz): {mean_coherence_passband:.4f}\n"
+        f" Mean (Overall): {np.mean(coherence):.4f}\n"
+        f" Median (Overall): {np.median(coherence):.4f}\n"
+        f" Max: {np.max(coherence):.4f} at {freqs_coh[np.argmax(coherence)]:.1f} Hz"
     )
-    ax5.text(0.1, 0.5, summary_text, fontsize=12, va='center')
-    
-    plt.tight_layout()
+    ax5.text(0.05, 0.5, summary_text, fontsize=11, va='center', family='monospace')
+
+    # Add an extra empty plot area in the last row if needed, or use for more info
+    ax6 = fig.add_subplot(gs[3, :])
+    ax6.axis('off')
+    info_text = (
+        f"Analysis Parameters:\n"
+        f" Raw FS: {raw_fs} Hz | LFP FS: {lfp_fs} Hz | Downsampling Factor: {downsampling_factor}\n"
+        f" LFP Filter: {filter_cutoff:.0f} Hz Low-pass (Order used in low_pass_filter)\n"
+        f" Samples Analyzed (Raw): {len(raw_signal_orig)} | Samples Analyzed (LFP): {min_len}\n"
+        f" PSD Window: {nperseg_lfp} samples ({nperseg_lfp/lfp_fs:.2f} s) | Coherence Window: {nperseg_lfp} samples"
+    )
+    ax6.text(0.05, 0.5, info_text, fontsize=10, va='center')
+
+
+    plt.tight_layout(pad=2.0) # Add padding
     plt.show()
 
 def compare_frequency_bands(dat_file, lfp_file, num_channels=384, num_samples=None, channel=0):

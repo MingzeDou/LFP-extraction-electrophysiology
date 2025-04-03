@@ -7,3 +7,4 @@ matplotlib
 pandas
 tabulate
 tqdm>=4.0.0
+pytest>=7.0.0 # For running tests
