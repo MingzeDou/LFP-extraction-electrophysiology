@@ -1,10 +1,19 @@
 import numpy as np
-from scipy import signal
-# CuPy is imported and managed in the main script (extract_lfp.py)
+import scipy.signal
+# Conditionally import cupy and cupyx
+try:
+    import cupy as cp
+    import cupyx.scipy.signal as cusignal
+    _cupy_available = True
+except ImportError:
+    _cupy_available = False
+    cp = None # Define cp as None if import fails
+    cusignal = None
 
 def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
     """
-    Apply a low-pass filter optimized for LFP extraction using the provided array module (xp).
+    Apply a low-pass filter optimized for LFP extraction using the provided array module (xp)
+    and leveraging GPU filtering (cupyx.scipy.signal) if xp is cupy.
     Uses a lower order filter with better stability and processes multi-channel data efficiently.
     
     Args:
@@ -21,36 +30,61 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
     normal_cutoff = cutoff / nyq
     filter_order = 2 # Lower order for stability with chunking
 
-    # Design filter using SciPy (works for both NumPy and CuPy inputs later)
-    sos = signal.butter(filter_order, normal_cutoff, btype='low', output='sos')
+    # Design filter using SciPy (coefficients are small, CPU calculation is fine)
+    sos_np = scipy.signal.butter(filter_order, normal_cutoff, btype='low', output='sos')
 
-    # Ensure data is xp array
-    data_xp = xp.asarray(data)
+    # --- Select filtering function and prepare inputs based on xp ---
+    if _cupy_available and xp == cp:
+        _sosfilt = cusignal.sosfilt # Use CuPy's sosfilt
+        sos = xp.asarray(sos_np)    # Transfer coefficients to GPU
+        data_xp = xp.asarray(data)  # Ensure data is on GPU
+        # Ensure initial_zi is on GPU if provided
+        if initial_zi is not None:
+            initial_zi = xp.asarray(initial_zi)
+    else:
+        _sosfilt = scipy.signal.sosfilt # Use SciPy's sosfilt
+        sos = sos_np                # Use NumPy coefficients
+        # Ensure data is NumPy array (might be CuPy if fallback occurred)
+        if hasattr(data, 'get'): # Check if it's a CuPy array
+             data_xp = data.get()
+        else:
+             data_xp = np.asarray(data)
+        # Ensure initial_zi is NumPy if provided
+        if initial_zi is not None and hasattr(initial_zi, 'get'):
+            initial_zi = initial_zi.get()
+        elif initial_zi is not None:
+            initial_zi = np.asarray(initial_zi)
 
-    # Determine number of channels
+    # Determine number of channels (use shape of data_xp)
     if data_xp.ndim == 1:
         num_channels = 1
-        # Reshape to 2D for consistent processing
+        # Reshape to 2D for consistent processing (samples, 1)
         data_xp = data_xp[:, xp.newaxis]
-    else:
+    elif data_xp.ndim == 2:
         num_channels = data_xp.shape[1]
+    else:
+        raise ValueError(f"Input data must be 1D or 2D, got {data_xp.ndim}D")
 
-    # Initialize filter state if not provided
+    # Initialize filter state if not provided, ensuring it's on the correct device (CPU/GPU)
     if initial_zi is None:
-        # Create initial state compatible with sosfilt shape requirements
-        zi_single = signal.sosfilt_zi(sos) # Shape (n_sections, 2)
-        # Repeat state for each channel: shape becomes (n_sections, 2, num_channels)
-        initial_zi = xp.asarray(np.repeat(zi_single[:, :, np.newaxis], num_channels, axis=2))
+        # Calculate zi using SciPy on CPU first
+        zi_single_np = scipy.signal.sosfilt_zi(sos_np) # Shape (n_sections, 2)
+        # Repeat state for each channel
+        zi_np = np.repeat(zi_single_np[:, :, np.newaxis], num_channels, axis=2)
+        # Transfer to GPU if needed
+        initial_zi = xp.asarray(zi_np)
 
     # Apply filter along the time axis (axis=0)
-    # sosfilt expects zi shape (n_sections, 2, n_channels) when axis=0 and data is (samples, n_channels)
-    filtered_data, final_zi = signal.sosfilt(sos, data_xp, axis=0, zi=initial_zi)
+    # Both scipy.signal.sosfilt and cupyx.scipy.signal.sosfilt expect
+    # zi shape (n_sections, 2, n_channels) when axis=0 and data is (samples, n_channels)
+    filtered_data, final_zi = _sosfilt(sos, data_xp, axis=0, zi=initial_zi)
 
-    # If input was 1D, return 1D array
-    if num_channels == 1 and filtered_data.ndim > 1:
+    # If input was 1D originally, return 1D array
+    # Check original data ndim or num_channels, not filtered_data.ndim
+    if num_channels == 1:
        filtered_data = filtered_data.flatten()
 
-    return filtered_data, final_zi
+    return filtered_data, final_zi # final_zi will be on the same device as filtered_data
 
 
 def downsample(data, target_fs, original_fs, xp):

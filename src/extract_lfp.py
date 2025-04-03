@@ -18,8 +18,8 @@ try:
     # Test CUDA functionality
     a = cp.array([1, 2, 3])
     a.sum()
-    # Simple kernel test
-    cp.RawKernel('extern "C" __global__ void example() {}', 'example')()
+    # Simple kernel test - just check compilation, don't call
+    cp.RawKernel('extern "C" __global__ void example() {}', 'example')
     xp = cp # Set xp to cupy
     GPU_AVAILABLE = True
     print(f"Using CuPy version: {cp.__version__}")
