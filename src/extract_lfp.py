@@ -140,6 +140,12 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
             # Reshape to (samples, channels)
             data_chunk_np = data_chunk_np.reshape(-1, num_channels)
 
+            # --- Check for empty chunk after reshape ---
+            if data_chunk_np.shape[0] == 0:
+                print(f"Warning: Skipping empty chunk {chunk_count}.")
+                chunk_count += 1 # Increment chunk count even if skipped
+                continue # Skip processing and read next chunk
+
             # Convert to float32 for processing (potential scaling could be added here if needed)
             data_chunk_float = data_chunk_np.astype(np.float32)
 
