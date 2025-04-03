@@ -35,58 +35,101 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
     sos_np = scipy.signal.butter(filter_order, normal_cutoff, btype='low', output='sos')
     # For order 4, sos_np will have shape (2, 6) -> n_sections = 2
 
-    # --- Select filtering function and prepare inputs based on xp ---
+    # --- Filtering Logic ---
     if _cupy_available and xp == cp:
-        _sosfilt = cusignal.sosfilt # Use CuPy's sosfilt
-        sos = xp.asarray(sos_np)    # Transfer coefficients to GPU
-        data_xp = xp.asarray(data)  # Ensure data is on GPU
-        # Ensure initial_zi is on GPU if provided
-        if initial_zi is not None:
-            initial_zi = xp.asarray(initial_zi)
+        # --- CuPy Path: Process channel by channel to avoid axis=0 issue ---
+        sos_gpu = xp.asarray(sos_np)    # Transfer coefficients to GPU once
+        data_xp = xp.asarray(data)      # Ensure data is on GPU
+
+        if data_xp.ndim == 1:
+            num_channels = 1
+            data_xp = data_xp[:, xp.newaxis] # Reshape to (samples, 1)
+        elif data_xp.ndim == 2:
+            num_channels = data_xp.shape[1]
+        else:
+            raise ValueError(f"Input data must be 1D or 2D, got {data_xp.ndim}D")
+
+        # Allocate output array on GPU
+        filtered_data = xp.zeros_like(data_xp)
+        final_zi_list = [] # Store list of final states per channel
+
+        # Calculate default single-channel zi on CPU and transfer if needed later
+        zi_single_np = scipy.signal.sosfilt_zi(sos_np)
+
+        for ch in range(num_channels):
+            channel_data = data_xp[:, ch]
+            ch_initial_zi = None
+
+            if initial_zi is None:
+                # First chunk for this channel, create default zi on GPU
+                ch_initial_zi = xp.asarray(np.ascontiguousarray(zi_single_np))
+            elif isinstance(initial_zi, list) and ch < len(initial_zi):
+                 # Subsequent chunk, use state from previous chunk (already on GPU)
+                 ch_initial_zi = initial_zi[ch]
+            else:
+                 # Fallback if initial_zi format is unexpected
+                 print(f"Warning: Unexpected initial_zi format for channel {ch}. Using default.")
+                 ch_initial_zi = xp.asarray(np.ascontiguousarray(zi_single_np))
+
+            # Filter single channel on GPU (no axis needed)
+            filtered_ch, next_zi_ch = cusignal.sosfilt(sos_gpu, channel_data, zi=ch_initial_zi)
+            filtered_data[:, ch] = filtered_ch
+            final_zi_list.append(next_zi_ch) # Append GPU array state
+
+        # Return multi-channel GPU array and list of GPU states
+        return filtered_data, final_zi_list
+
     else:
+        # --- SciPy Path: Use axis=0 for efficiency ---
         _sosfilt = scipy.signal.sosfilt # Use SciPy's sosfilt
         sos = sos_np                # Use NumPy coefficients
-        # Ensure data is NumPy array (might be CuPy if fallback occurred)
-        if hasattr(data, 'get'): # Check if it's a CuPy array
-             data_xp = data.get()
+
+        # Ensure data is NumPy array
+        if hasattr(data, 'get'): # Check if it's a CuPy array (e.g., fallback)
+             data_np = data.get()
         else:
-             data_xp = np.asarray(data)
+             data_np = np.asarray(data)
+
         # Ensure initial_zi is NumPy if provided
-        if initial_zi is not None and hasattr(initial_zi, 'get'):
-            initial_zi = initial_zi.get()
-        elif initial_zi is not None:
-            initial_zi = np.asarray(initial_zi)
+        initial_zi_np = None
+        if initial_zi is not None:
+             if isinstance(initial_zi, list): # Handle case where previous chunk was GPU
+                 print("Warning: Switching from GPU state list to CPU state array.")
+                 # Attempt to convert list of CuPy arrays back (might be slow)
+                 try:
+                     initial_zi_np = np.stack([s.get() for s in initial_zi], axis=-1)
+                 except Exception as e:
+                     print(f"Error converting GPU state list to CPU array: {e}. Using default state.")
+                     initial_zi_np = None # Fallback to default
+             elif hasattr(initial_zi, 'get'): # Single CuPy array (shouldn't happen with current logic)
+                 initial_zi_np = initial_zi.get()
+             else: # Assume it's already a NumPy array
+                 initial_zi_np = np.asarray(initial_zi)
 
-    # Determine number of channels (use shape of data_xp)
-    if data_xp.ndim == 1:
-        num_channels = 1
-        # Reshape to 2D for consistent processing (samples, 1)
-        data_xp = data_xp[:, xp.newaxis]
-    elif data_xp.ndim == 2:
-        num_channels = data_xp.shape[1]
-    else:
-        raise ValueError(f"Input data must be 1D or 2D, got {data_xp.ndim}D")
+        # Determine number of channels
+        if data_np.ndim == 1:
+            num_channels = 1
+            data_np = data_np[:, np.newaxis] # Reshape to (samples, 1)
+        elif data_np.ndim == 2:
+            num_channels = data_np.shape[1]
+        else:
+            raise ValueError(f"Input data must be 1D or 2D, got {data_np.ndim}D")
 
-    # Initialize filter state if not provided, ensuring it's on the correct device (CPU/GPU)
-    if initial_zi is None:
-        # Calculate zi using SciPy on CPU first
-        zi_single_np = scipy.signal.sosfilt_zi(sos_np) # Shape (n_sections, 2)
-        # Repeat state for each channel
-        zi_np = np.repeat(zi_single_np[:, :, np.newaxis], num_channels, axis=2) # Shape (n_sections, 2, num_channels)
-        # Ensure C-contiguity before transferring to GPU, as CuPy might be sensitive to memory layout
-        initial_zi = xp.asarray(np.ascontiguousarray(zi_np))
+        # Initialize filter state if not provided or if conversion failed
+        if initial_zi_np is None:
+            zi_single_np = scipy.signal.sosfilt_zi(sos_np) # Shape (n_sections, 2)
+            zi_np = np.repeat(zi_single_np[:, :, np.newaxis], num_channels, axis=2) # Shape (n_sections, 2, num_channels)
+            initial_zi_np = np.ascontiguousarray(zi_np)
 
-    # Apply filter along the time axis (axis=0)
-    # Both scipy.signal.sosfilt and cupyx.scipy.signal.sosfilt expect
-    # zi shape (n_sections, 2, n_channels) when axis=0 and data is (samples, n_channels)
-    filtered_data, final_zi = _sosfilt(sos, data_xp, axis=0, zi=initial_zi)
+        # Apply filter along the time axis (axis=0)
+        filtered_data, final_zi = _sosfilt(sos, data_np, axis=0, zi=initial_zi_np)
 
-    # If input was 1D originally, return 1D array
-    # Check original data ndim or num_channels, not filtered_data.ndim
-    if num_channels == 1:
-       filtered_data = filtered_data.flatten()
+        # If input was 1D originally, return 1D array
+        if num_channels == 1:
+           filtered_data = filtered_data.flatten()
 
-    return filtered_data, final_zi # final_zi will be on the same device as filtered_data
+        # Return NumPy array and NumPy state array
+        return filtered_data, final_zi
 
 
 def downsample(data, target_fs, original_fs, xp):
