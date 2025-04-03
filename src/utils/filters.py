@@ -28,10 +28,12 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
     """
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
-    filter_order = 2 # Lower order for stability with chunking
+    # Increase filter order slightly - might avoid edge case in cupyx.scipy.signal with n_sections=1
+    filter_order = 4
 
     # Design filter using SciPy (coefficients are small, CPU calculation is fine)
     sos_np = scipy.signal.butter(filter_order, normal_cutoff, btype='low', output='sos')
+    # For order 4, sos_np will have shape (2, 6) -> n_sections = 2
 
     # --- Select filtering function and prepare inputs based on xp ---
     if _cupy_available and xp == cp:
