@@ -203,7 +203,12 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
             f_out.write(lfp_data_int16.tobytes())
 
             # --- Cleanup and Progress ---
-            # Rely on Python's garbage collection for loop variables. Removed explicit del statements.
+            # Explicitly delete intermediate arrays to potentially help memory management
+            del data_chunk_np, data_chunk_float, lfp_chunk_np, lfp_data_int16
+            # Delete GPU arrays if they exist and are different from CPU versions
+            if 'data_chunk_xp' in locals() and data_chunk_xp is not data_chunk_float: del data_chunk_xp
+            if 'lfp_chunk_processed' in locals() and lfp_chunk_processed is not lfp_chunk_np: del lfp_chunk_processed
+
 
             chunk_count += 1
             if chunk_count % 10 == 0: # Report progress every 10 chunks
