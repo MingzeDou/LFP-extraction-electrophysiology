@@ -158,15 +158,18 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
                 try:
                     data_chunk_xp = xp.asarray(data_chunk_float)
                 except Exception as e:
+                    # Declare intention to modify global variables
+                    global GPU_AVAILABLE, xp
                     print(f"Error transferring chunk {chunk_count} to GPU: {e}. Falling back to NumPy for this chunk.")
                     data_chunk_xp = data_chunk_float # Use the NumPy float version
-                    current_xp = np # Ensure xp reflects NumPy for this chunk processing
+                    current_xp = np # Ensure current_xp reflects NumPy for this chunk processing
                     # We might need to handle filter state conversion if switching mid-stream
                     # For simplicity, assume we stick to CPU if transfer fails once.
                     # A more robust solution might try GPU again later.
                     print("Processing will continue on CPU.")
-                    GPU_AVAILABLE = False # Disable GPU for subsequent chunks
-                    xp = np
+                    GPU_AVAILABLE = False # Modify global flag
+                    xp = np # Modify global xp
+                    current_xp = np # Also set current_xp for this chunk
                 else:
                     current_xp = xp # Use CuPy
             else:
