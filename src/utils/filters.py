@@ -176,77 +176,13 @@ def low_pass_filter(data, cutoff, fs, xp, initial_zi=None):
 
 
 def downsample(data, target_fs, original_fs, xp):
-    """
-    Downsample data by an integer factor using multi-stage Chebyshev IIR filtering
-    provided by scipy.signal.decimate or cusignal.decimate.
-
-    Args:
-        data: Input signal (numpy or cupy array, samples x channels)
-        target_fs: Target sampling frequency in Hz
-        original_fs: Original sampling frequency in Hz
-        xp: Array module (numpy or cupy)
-
-    Returns:
-        Downsampled data (xp array)
-    """
-    if not isinstance(original_fs, int) or not isinstance(target_fs, int):
-        raise TypeError("Original and target sampling rates must be integers for decimate.")
-
-    if original_fs % target_fs != 0:
-        raise ValueError("Target sampling rate must be an integer divisor of the original sampling rate for decimate.")
-
-    factor = original_fs // target_fs
-
+    """Downsample data by integer factor using the provided array module (xp)."""
+    factor = int(original_fs / target_fs)
     if factor <= 0:
         raise ValueError("Downsampling factor must be positive.")
     if factor == 1:
         return data # No downsampling needed
 
-    data_xp = xp.asarray(data) # Ensure data is on the correct device (CPU/GPU)
-
-    # Ensure data is at least 2D for axis handling, even if single channel
-    if data_xp.ndim == 1:
-        data_xp = data_xp[:, xp.newaxis]
-        was_1d = True
-    else:
-        was_1d = False
-
-    if _cupy_available and xp == cp:
-        # Use CuPy's decimate
-        try:
-            downsampled_data = cusignal.decimate(data_xp, factor, ftype='iir', axis=0, zero_phase=False)
-        except Exception as e:
-            print(f"Warning: cusignal.decimate failed ({e}). Falling back to SciPy decimate on CPU.")
-            # Fallback requires transferring data to CPU
-            data_np = cp.asnumpy(data_xp)
-            downsampled_data_np = scipy.signal.decimate(data_np, factor, ftype='iir', axis=0, zero_phase=True) # Use zero_phase=True for SciPy default
-            # Transfer back to GPU? Or keep on CPU? Let's keep on CPU for simplicity after fallback.
-            # This means subsequent processing might also need to handle CPU data.
-            # For now, return NumPy array. The calling function needs awareness.
-            # TODO: Re-evaluate fallback strategy if needed.
-            print("Data processed by SciPy decimate will remain on CPU (NumPy array).")
-            # If input was 1D, return 1D
-            if was_1d:
-                return downsampled_data_np.flatten()
-            else:
-                return downsampled_data_np
-
-    else:
-        # Use SciPy's decimate
-        # Ensure data is NumPy
-        if hasattr(data_xp, 'get'): # Check if it's a CuPy array (e.g., during fallback)
-             data_np = data_xp.get()
-        else:
-             data_np = np.asarray(data_xp) # Should already be NumPy here
-
-        # Note: scipy.signal.decimate defaults to zero_phase=True.
-        # We explicitly set zero_phase=False here to maintain consistency with the
-        # causal low_pass_filter and the cusignal.decimate call (which also uses zero_phase=False).
-        # This ensures both CPU and GPU paths apply causal filtering during decimation.
-        downsampled_data = scipy.signal.decimate(data_np, factor, ftype='iir', axis=0, zero_phase=False)
-
-    # If input was 1D, return 1D array
-    if was_1d:
-        return downsampled_data.flatten()
-    else:
-        return downsampled_data
+    data_xp = xp.asarray(data)
+    # Slice along the time axis (axis 0)
+    return data_xp[::factor, ...] # Use ellipsis for multi-channel compatibility
