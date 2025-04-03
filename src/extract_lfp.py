@@ -80,8 +80,6 @@ def process_chunk(data_chunk_xp, filter_states=None):
 
 
 def extract_lfp(input_file, output_file, chunk_size, num_channels):
-    # Declare upfront that we might modify these global variables within this function
-    global GPU_AVAILABLE, xp
     """
     Extract LFP from raw data file (.dat), handling chunking and GPU acceleration.
 
@@ -160,7 +158,8 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
                 try:
                     data_chunk_xp = xp.asarray(data_chunk_float)
                 except Exception as e:
-                    # No global declaration needed here anymore
+                    # Declare intention to modify global variables
+                    global GPU_AVAILABLE, xp
                     print(f"Error transferring chunk {chunk_count} to GPU: {e}. Falling back to NumPy for this chunk.")
                     data_chunk_xp = data_chunk_float # Use the NumPy float version
                     current_xp = np # Ensure current_xp reflects NumPy for this chunk processing
