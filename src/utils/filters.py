@@ -209,11 +209,26 @@ def low_pass_filter(data: Array, cutoff: float, fs: float, initial_zi: Optional[
          # --- CuPy path (keep original logic with state handling) ---
          try:
             filtered_data_raw, final_zi = sig.sosfilt(sos_filt, data, axis=axis, zi=zi_filt)
+
+            # --- Add check for returned CuPy state shape ---
+            if final_zi is not None:
+                expected_zi_shape_base: Tuple[int, int] = (n_sections, 2)
+                expected_shape = expected_zi_shape_base
+                if data.ndim > 1:
+                    n_channels = data.shape[axis * -1 + 1]
+                    expected_shape = (n_sections, 2, n_channels)
+
+                if final_zi.shape != expected_shape:
+                    # Raise a specific error if CuPy returns wrong state shape
+                    raise RuntimeError(f"CuPy sosfilt returned unexpected final_zi shape. Expected {expected_shape}, got {final_zi.shape}")
+            # --- End check ---
+
             # Ensure output dtype matches input dtype
             filtered_data = filtered_data_raw.astype(original_dtype, copy=False)
          except Exception as e:
              logger.error(f"Error during CuPy sosfilt: {e}", exc_info=True)
-             return data, None # Return original data and None state on error
+             # Propagate the error to trigger fallback in extract_lfp
+             raise e
          # --- End CuPy path ---
     else:
          logger.error("Unknown array module.")

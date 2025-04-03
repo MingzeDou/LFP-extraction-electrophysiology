@@ -210,6 +210,7 @@ def extract_lfp(input_file: str, output_file: str, chunk_size: int, num_channels
     logger.info(f"  Original FS: {SAMPLE_RATE_ORIGINAL} Hz, Target FS: {TARGET_SAMPLING_RATE} Hz, Cutoff: {CUTOFF_FREQUENCY} Hz")
 
     # --- Main Processing Loop ---
+    gpu_processing_failed = False # Flag to track if GPU failed once
     try:
         with open(input_file, 'rb') as f_in, open(output_file, 'wb') as f_out:
             chunk_count: int = 0
@@ -265,11 +266,15 @@ def extract_lfp(input_file: str, output_file: str, chunk_size: int, num_channels
                 # --- Process Chunk ---
                 lfp_chunk_np: np.ndarray
                 processing_chunk: Array # Can be np or cp array
-                if GPU_AVAILABLE:
+
+                # Decide whether to attempt GPU processing
+                attempt_gpu = GPU_AVAILABLE and not gpu_processing_failed
+
+                if attempt_gpu:
                     try:
                         # Transfer data and state (if exists) to GPU
-                        processing_chunk = xp.asarray(processing_chunk_np)
-                        filter_state_gpu = xp.asarray(filter_state) if filter_state is not None else None
+                        processing_chunk = xp.asarray(processing_chunk_np) # type: ignore
+                        filter_state_gpu = xp.asarray(filter_state) if filter_state is not None else None # type: ignore
 
                         lfp_chunk_np, filter_state = process_chunk(
                             processing_chunk, filter_state_gpu, overlap_to_trim_in_samples
@@ -279,20 +284,37 @@ def extract_lfp(input_file: str, output_file: str, chunk_size: int, num_channels
                               filter_state = cp.asnumpy(filter_state) # type: ignore
 
                     except Exception as e:
-                         # Catch potential GPU errors (e.g., OOM)
-                         logger.error(f"Error during GPU processing: {e}. Falling back to CPU for this chunk.", exc_info=True)
+                         # Catch potential GPU errors (e.g., OOM, state shape error from low_pass_filter)
+                         logger.error(f"Error during GPU processing: {e}. Falling back to CPU for this chunk and subsequent chunks.", exc_info=False) # Log less verbosely now
+                         gpu_processing_failed = True # Set flag to prevent future GPU attempts
                          free_gpu_memory() # Attempt to clear GPU memory
+
                          # Fallback to CPU processing for this chunk
+                         logger.info("Retrying chunk processing on CPU...")
                          processing_chunk = processing_chunk_np # Use the NumPy version
+                         # Reset filter state for the CPU fallback as the GPU state was invalid/caused error
+                         filter_state = None
                          lfp_chunk_np, filter_state = process_chunk(
                              processing_chunk, filter_state, overlap_to_trim_in_samples
                          )
-                else:
-                    # Process directly on CPU
+                         # Note: filter_state will now be a NumPy array if successful
+
+                # If GPU wasn't attempted or failed *initially*, process on CPU
+                elif not attempt_gpu: # This 'elif' handles the case where GPU was never tried for the chunk
+                    # Ensure filter state is NumPy if coming from a previous (successful) GPU chunk's state
+                    if filter_state is not None and not isinstance(filter_state, np.ndarray):
+                         logger.debug("Converting previous filter state from CuPy to NumPy for CPU processing.")
+                         try:
+                              filter_state = cp.asnumpy(filter_state) # type: ignore
+                         except Exception as conv_e:
+                              logger.error(f"Could not convert filter state to NumPy for CPU processing: {conv_e}. Resetting state.")
+                              filter_state = None
+
                     processing_chunk = processing_chunk_np
                     lfp_chunk_np, filter_state = process_chunk(
                         processing_chunk, filter_state, overlap_to_trim_in_samples
                     )
+                    # Note: filter_state will be NumPy array here
 
 
                 # --- Write Output ---
