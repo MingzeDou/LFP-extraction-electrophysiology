@@ -1,0 +1,20 @@
+# Base requirements
+numpy>=1.20.0
+scipy>=1.7.0
+tqdm>=4.0.0
+
+# GPU specific
+# cupy installation depends heavily on CUDA version.
+# Install separately using conda or pip as per CuPy documentation.
+# Example: conda install -c conda-forge cupy cudatoolkit=12.0
+# Example: pip install cupy-cuda12x
+# cupy>=10.0.0 # Add this line if you manage cupy via pip requirements, but manual install is often better.
+pycuda # Optional, for diagnostics
+
+# Validation script requirements
+matplotlib
+pandas
+tabulate
+
+# Other optional
+h5py
