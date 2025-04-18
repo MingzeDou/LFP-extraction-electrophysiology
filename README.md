@@ -278,5 +278,3 @@ Please ensure code is well-commented and, if adding features, consider adding co
 
 ## License
 This project is licensed under the MIT License.
-
-*(Suggestion: Create a file named `LICENSE` in the root directory and paste the text of the MIT License into it. You can find the text easily online, e.g., at opensource.org/licenses/MIT)*
