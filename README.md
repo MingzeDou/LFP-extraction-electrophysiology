@@ -186,7 +186,7 @@ python run.py \
 
 Default parameters can be adjusted in the `config.py` file within the respective `GPU_process` or `CPU_process` directory.
 
-### `GPU_process/src/config.py`
+### `config.py`
 ```python
 # Signal Processing
 SAMPLE_RATE_ORIGINAL = 30000  # Hz (Raw data sample rate)
@@ -202,30 +202,6 @@ N_CHANNELS = 385        # Number of recording channels
 INPUT_FILE = "path/to/input.dat"
 OUTPUT_FILE = "path/to/output.lfp"
 ```
-
-### `CPU_process/src/config.py`
-```python
-# Signal Processing
-SAMPLE_RATE_ORIGINAL = 30000  # Hz (Raw data sample rate)
-TARGET_SAMPLING_RATE = 1250   # Hz (Desired LFP sample rate)
-CUTOFF_FREQUENCY = 450        # Hz (Low-pass filter cutoff)
-
-# Processing
-# IMPORTANT: CHUNK_SIZE must be divisible by N_CHANNELS * 2 (bytes per frame)
-CHUNK_SIZE = 1073741824 # Bytes (1GB) - Adjust based on system RAM
-N_CHANNELS = 385        # Number of recording channels
-OVERLAP_SECONDS = 0.5   # Seconds of overlap between chunks for CPU processing
-
-# File Paths (can be overridden by command line args)
-INPUT_FILE = "path/to/input.dat"
-OUTPUT_FILE = "path/to/output.lfp"
-```
-
-**Important Notes:**
-- The downsampling factor (`SAMPLE_RATE_ORIGINAL / TARGET_SAMPLING_RATE`) must be an integer.
-- `CUTOFF_FREQUENCY` should be less than half the `TARGET_SAMPLING_RATE` (Nyquist theorem).
-- `CHUNK_SIZE` significantly impacts performance and memory usage. Experiment to find the optimal value for your system.
-- `OVERLAP_SECONDS` (CPU path only) determines how much data is re-processed at chunk boundaries to avoid artifacts. 0.1-0.5 seconds is usually sufficient.
 
 ## Validation with compare_files.py
 
