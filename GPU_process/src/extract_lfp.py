@@ -1,24 +1,30 @@
 import os
 import numpy as np
-import time # Add time import
+import time  # Add time import
+
 # Import the updated filter functions
-from src.utils.filters import low_pass_filter, downsample
+from src.utils.filters import apply_filter_and_downsample
 from src.config import SAMPLE_RATE_ORIGINAL, TARGET_SAMPLING_RATE, CUTOFF_FREQUENCY
 
 # Import CuPy - Raise error if unavailable
 try:
     import cupy as cp
+
     # Test CUDA functionality
     a = cp.array([1, 2, 3])
     a.sum()
     # Simple kernel test - just check compilation, don't call
-    cp.RawKernel('extern "C" __global__ void example() {}', 'example')
+    cp.RawKernel('extern "C" __global__ void example() {}', "example")
     print(f"Using CuPy version: {cp.__version__}")
     print(f"GPU device: {cp.cuda.get_device_id()}")
 except ImportError as e:
-    raise ImportError(f"CuPy failed to import: {e}. Please install CuPy or use the CPU_process scripts.") from e
-except Exception as e: # Catch other potential CUDA errors
-    raise RuntimeError(f"CuPy initialization failed ({type(e).__name__}: {e}). Ensure CUDA drivers and toolkit are compatible. Otherwise, use the CPU_process scripts.") from e
+    raise ImportError(
+        f"CuPy failed to import: {e}. Please install CuPy or use the CPU_process scripts."
+    ) from e
+except Exception as e:  # Catch other potential CUDA errors
+    raise RuntimeError(
+        f"CuPy initialization failed ({type(e).__name__}: {e}). Ensure CUDA drivers and toolkit are compatible. Otherwise, use the CPU_process scripts."
+    ) from e
 
 
 def free_gpu_memory():
@@ -34,45 +40,16 @@ def free_gpu_memory():
         print(f"Error freeing GPU memory: {e}")
 
 
-def process_chunk(data_chunk_gpu, filter_states=None):
-    """
-    Process a chunk of data on the GPU: filter then downsample.
-    Relies on filter state propagation for continuity between chunks.
-
-    Args:
-        data_chunk_gpu: Input data chunk (CuPy array, float32, samples x channels)
-        filter_states: Initial filter state from the previous chunk (optional, list of CuPy arrays)
-
-    Returns:
-        tuple: (processed_data (CuPy array), next_filter_state (list of CuPy arrays))
-    """
-    # Calculate cutoff frequency (ensure it's not too high)
-    cutoff = min(TARGET_SAMPLING_RATE * 0.45, CUTOFF_FREQUENCY)
-
-    # 1. Filter first at original sample rate using CuPy
-    # The updated low_pass_filter operates only on GPU
-    filtered_data, next_filter_state = low_pass_filter(
-        data_chunk_gpu, cutoff, SAMPLE_RATE_ORIGINAL, initial_zi=filter_states
-    )
-
-    # 2. Then downsample using CuPy
-    # The updated downsample operates only on GPU
-    downsampled_data = downsample(
-        filtered_data, TARGET_SAMPLING_RATE, SAMPLE_RATE_ORIGINAL
-    )
-
-    return downsampled_data, next_filter_state
-
-
 def extract_lfp(input_file, output_file, chunk_size, num_channels):
     """
-    Extract LFP from raw data file (.dat) using GPU acceleration via CuPy.
-    Raises errors if CuPy is unavailable or GPU operations fail.
+    Extract LFP from raw data file (.dat) using GPU acceleration and overlapped chunking.
+    Uses zero-phase filtering (filtfilt) by loading chunks with padding.
 
     Args:
         input_file: Path to input raw data file (.dat)
         output_file: Path to output LFP file
-        chunk_size: Size of chunks to process in bytes.
+        chunk_size: Target size of chunks to process (in bytes).
+                    Will be converted to samples.
         num_channels: Number of channels in the data.
     """
     # Validate inputs
@@ -85,100 +62,125 @@ def extract_lfp(input_file, output_file, chunk_size, num_channels):
         os.makedirs(output_dir)
 
     print(f"Processing data file: {input_file} to {output_file}")
-    print(f"Using GPU acceleration via CuPy.") # Always using GPU now
+    print(f"Using Overlapped Chunking for Zero-Phase Filtering on GPU.")
 
-    # Data type and bytes per sample/frame
-    dtype = np.int16
-    bytes_per_sample = np.dtype(dtype).itemsize
-    bytes_per_frame = num_channels * bytes_per_sample
+    # Data type and sizes
+    dtype_input = np.int16
+    bytes_per_sample = np.dtype(dtype_input).itemsize
 
-    # Adjust chunk size to be divisible by bytes_per_frame for clean reshaping
-    if chunk_size % bytes_per_frame != 0:
-        chunk_size = chunk_size - (chunk_size % bytes_per_frame)
-        print(f"Adjusted chunk size to {chunk_size} bytes to be divisible by frame size ({bytes_per_frame} bytes).")
+    # Calculate file structure
+    file_size_bytes = os.path.getsize(input_file)
+    total_samples = file_size_bytes // (num_channels * bytes_per_sample)
 
-    # Get file size for progress tracking
-    file_size = os.path.getsize(input_file)
-    bytes_processed = 0
+    # Calculate chunk size in samples (per channel)
+    # chunk_size input is roughly bytes for all channels
+    # We want a manageable number of TIME samples to load at once
+    # Let's target ~1GB of VRAM usage or use the provided chunk_size
+    # chunk_size (bytes) / (num_channels * 2 bytes/sample) = samples_per_chunk
+    samples_per_chunk_target = chunk_size // (num_channels * bytes_per_sample)
 
-    # Initialize filter state (will be managed by low_pass_filter)
-    filter_states = None
+    # Ensure chunk size is divisible by downsampling factor to keep alignment simple
+    downsample_factor = int(SAMPLE_RATE_ORIGINAL / TARGET_SAMPLING_RATE)
+    if samples_per_chunk_target % downsample_factor != 0:
+        samples_per_chunk_target -= samples_per_chunk_target % downsample_factor
 
-    start_time = time.time() # Record start time
+    # Define Padding (Context) for stable filtering
+    # 0.5 seconds of context is usually sufficient for LFP filters
+    pad_samples = int(0.5 * SAMPLE_RATE_ORIGINAL)
 
-    with open(input_file, 'rb') as f_in, open(output_file, 'wb') as f_out:
-        chunk_count = 0
-        while True:
-            # Read a chunk of data
-            data_bytes = f_in.read(chunk_size)
-            if not data_bytes:
-                break # End of file
+    print(f"Total Samples: {total_samples}")
+    print(f"Chunk Size (Time Samples): {samples_per_chunk_target}")
+    print(f"Padding (Time Samples): {pad_samples}")
 
-            bytes_processed += len(data_bytes)
+    # Open Input File using Memmap (Read-Only) - Fast & Low Memory
+    # Shape: (Time, Channels)
+    data_map = np.memmap(
+        input_file, dtype=dtype_input, mode="r", shape=(total_samples, num_channels)
+    )
 
-            # Convert buffer to numpy array
-            data_chunk_np = np.frombuffer(data_bytes, dtype=dtype)
+    start_time = time.time()
 
-            # Handle incomplete frames at the very end of the file
-            remainder = len(data_chunk_np) % num_channels
-            if remainder != 0:
-                print(f"Warning: Trimming {remainder} samples from final incomplete frame.")
-                data_chunk_np = data_chunk_np[:-remainder]
+    # Open Output File
+    # We will append to it.
+    with open(output_file, "wb") as f_out:
 
-            # Reshape to (samples, channels)
-            data_chunk_np = data_chunk_np.reshape(-1, num_channels)
+        chunk_idx = 0
+        current_sample = 0
 
-            # --- Check for empty chunk after reshape ---
-            if data_chunk_np.shape[0] == 0:
-                print(f"Warning: Skipping empty chunk {chunk_count}.")
-                chunk_count += 1 # Increment chunk count even if skipped
-                continue # Skip processing and read next chunk
+        while current_sample < total_samples:
+            # 1. Define Standard Block
+            block_start = current_sample
+            block_end = min(current_sample + samples_per_chunk_target, total_samples)
+            block_len = block_end - block_start
 
-            # Convert to float32 for processing (potential scaling could be added here if needed)
-            data_chunk_float = data_chunk_np.astype(np.float32)
+            # 2. Define Loaded Region (Block + Padding)
+            load_start = max(0, block_start - pad_samples)
+            load_end = min(total_samples, block_end + pad_samples)
 
-            # --- GPU Acceleration ---
-            # Transfer data to GPU
+            # 3. Load Data from Memmap
+            # Note: memmap access is standard numpy slicing
+            data_chunk_cpu = data_map[load_start:load_end, :]
+
+            # Convert to Float32 for GPU
+            data_chunk_float = data_chunk_cpu.astype(np.float32)
+
+            # 4. Transfer to GPU
             try:
                 data_chunk_gpu = cp.asarray(data_chunk_float)
             except Exception as e:
-                raise RuntimeError(f"Error transferring chunk {chunk_count} to GPU: {e}. "
-                                   "Check GPU memory and compatibility. Consider using the CPU_process scripts.") from e
+                # Fallback or Error
+                free_gpu_memory()
+                raise RuntimeError(f"GPU OOM on Chunk {chunk_idx}: {e}")
 
-            # --- Process Chunk ---
-            # Pass the GPU array and current filter state
-            lfp_chunk_gpu, filter_states = process_chunk(data_chunk_gpu, filter_states)
+            # 5. Apply Zero-Phase Filter & Downsample
+            # This function now does: sosfilt -> flip -> sosfilt -> flip -> slice
+            processed_gpu = apply_filter_and_downsample(
+                data_chunk_gpu,
+                CUTOFF_FREQUENCY,
+                SAMPLE_RATE_ORIGINAL,
+                TARGET_SAMPLING_RATE,
+            )
 
-            # --- Data Conversion and Writing ---
-            # Transfer result back to CPU
-            try:
-                lfp_chunk_np = cp.asnumpy(lfp_chunk_gpu)
-            except Exception as e:
-                 raise RuntimeError(f"Error transferring chunk {chunk_count} result from GPU: {e}. "
-                                    "Check GPU memory. Consider using the CPU_process scripts.") from e
+            # 6. Trim Padding from Output
+            # We need to calculate where the 'valid' block is in the downsampled space
 
-            # Ensure it's the correct type before writing
-            lfp_data_int16 = lfp_chunk_np.astype(dtype)
-            f_out.write(lfp_data_int16.tobytes())
+            # Calculate input offsets relative to the loaded chunk
+            valid_start_input_rel = block_start - load_start
+            valid_end_input_rel = block_end - load_start  # Exclusive
 
-            # --- Cleanup and Progress ---
-            # Explicitly delete intermediate arrays to potentially help memory management
-            # Note: CuPy arrays (data_chunk_gpu, lfp_chunk_gpu) should be garbage collected
-            del data_chunk_np, data_chunk_float, data_chunk_gpu, lfp_chunk_gpu, lfp_chunk_np, lfp_data_int16
+            # Convert these offsets to output (downsampled) space
+            # Note: The downsample operation is a slice [::factor]
+            # So index i in output corresponds to index i*factor in input
+            valid_start_output = int(valid_start_input_rel / downsample_factor)
+            valid_end_output = int(valid_end_input_rel / downsample_factor)
 
-            chunk_count += 1
-            if chunk_count % 10 == 0: # Report progress every 10 chunks
-                progress = (bytes_processed / file_size) * 100
-                print(f"Processed {chunk_count} chunks... ({progress:.1f}% complete)")
-                # Free GPU memory periodically
-                if chunk_count % 50 == 0: # Free every 50 chunks
-                    free_gpu_memory()
+            # Extract the valid region
+            result_gpu = processed_gpu[valid_start_output:valid_end_output, :]
 
-    # Final GPU memory cleanup
+            # 7. Write to Disk
+            result_cpu = cp.asnumpy(result_gpu).astype(np.int16)
+            f_out.write(result_cpu.tobytes())
+
+            # Cleanup
+            del (
+                data_chunk_cpu,
+                data_chunk_float,
+                data_chunk_gpu,
+                processed_gpu,
+                result_gpu,
+                result_cpu,
+            )
+
+            # Progress update
+            chunk_idx += 1
+            current_sample = block_end
+
+            if chunk_idx % 1 == 0:
+                progress = (current_sample / total_samples) * 100
+                print(f"Processed chunk {chunk_idx}: {progress:.1f}%")
+                free_gpu_memory()
+
     free_gpu_memory()
-
-    end_time = time.time() # Record end time
-    duration = end_time - start_time
-    print(f"\nTotal processing time: {duration:.2f} seconds") # Print duration
-
-    print(f"LFP extraction complete. Output saved to {output_file}")
+    end_time = time.time()
+    print(f"\nProcessing complete in {end_time - start_time:.2f} seconds.")
+    print(f"Saved to {output_file}")
