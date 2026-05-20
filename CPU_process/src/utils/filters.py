@@ -1,89 +1,68 @@
 import numpy as np
 from scipy import signal
 
-# Using NumPy for CPU processing
-print("Using NumPy for CPU processing")
 
-def low_pass_filter(data, cutoff, fs, initial_zi=None):
+DEFAULT_FILTER_TAPS = 2001
+
+
+def compute_downsample_factor(raw_fs, lfp_fs):
+    """Return integer downsampling factor derived from sample rates."""
+    raw_fs = int(raw_fs)
+    lfp_fs = int(lfp_fs)
+    if raw_fs <= 0 or lfp_fs <= 0:
+        raise ValueError("raw_fs and lfp_fs must be positive")
+    if raw_fs % lfp_fs != 0:
+        raise ValueError(
+            f"raw_fs ({raw_fs}) must be an integer multiple of lfp_fs ({lfp_fs}) "
+            "for exact sample alignment"
+        )
+    return raw_fs // lfp_fs
+
+
+def design_lfp_filter(cutoff, raw_fs, num_taps=DEFAULT_FILTER_TAPS):
     """
-    Apply a low-pass filter optimized for LFP extraction using NumPy/SciPy.
-    Uses a lower order filter with better stability.
-    
-    Args:
-        data: Input signal
-        cutoff: Cutoff frequency in Hz
-        fs: Sampling frequency in Hz
-        initial_zi: Initial filter state (optional)
-        
-    Returns:
-        tuple: (filtered_data, final_filter_state)
+    Design an odd-length, linear-phase FIR low-pass filter.
+
+    The odd length gives an integer group delay, so centered convolution keeps
+    output sample k aligned to raw sample k before downsampling.
     """
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff / nyq
-    filter_order = 2
-    
-    # Create a Butterworth filter
-    sos = signal.butter(filter_order, normal_cutoff, btype='low', output='sos')
-    
-    if len(data.shape) > 1 and data.shape[1] > 1:
-        # Handle multi-channel data
-        channels = data.shape[1]
-        result = np.zeros_like(data)
-        final_zi = []
-        
-        for ch in range(channels):
-            channel_data = data[:, ch]
-            
-            # Get initial state for this channel
-            if initial_zi is None:
-                zi = signal.sosfilt_zi(sos)
-                zi_ch = np.tile(zi, (1, 1)).copy()
-            else:
-                zi_ch = initial_zi[ch]
-            
-            # No padding needed when using filter states properly
-            filtered, next_zi = signal.sosfilt(sos, channel_data, zi=zi_ch)
-            result[:, ch] = filtered
-            final_zi.append(next_zi)
-        
-        return result, final_zi
-    else:
-        # Single channel data
-        # Get initial state
-        if initial_zi is None:
-            zi = signal.sosfilt_zi(sos)
-            zi_expanded = np.tile(zi, (1, 1)).copy()
-        else:
-            zi_expanded = initial_zi
-        
-        filtered, next_zi = signal.sosfilt(sos, data, zi=zi_expanded)
-        return filtered, next_zi
+    num_taps = int(num_taps)
+    if num_taps < 3:
+        raise ValueError("num_taps must be >= 3")
+    if num_taps % 2 == 0:
+        num_taps += 1
 
-def multi_stage_filter(data, cutoff, fs, initial_zi=None):
-    """Cascade of filters for better stability"""
-    # First stage - higher cutoff
-    first_cutoff = min(cutoff * 2, fs * 0.45)  
-    filtered, zi1 = low_pass_filter(data, first_cutoff, fs, initial_zi)
-    
-    # Second stage - target cutoff
-    filtered, zi2 = low_pass_filter(filtered, cutoff, fs, None)
-    
-    return filtered, zi1  # Return first stage filter state
+    nyquist = raw_fs / 2.0
+    if not 0 < cutoff < nyquist:
+        raise ValueError(f"cutoff must be between 0 and Nyquist ({nyquist} Hz)")
 
-def downsample(data, target_fs, original_fs):
-    """Downsample data using scipy.signal.decimate for anti-aliasing."""
-    factor = int(original_fs / target_fs)
-    if factor <= 1:
-        return data  # No downsampling needed or invalid factor
-    
-    # Ensure data is NumPy array for decimate
-    data_np = np.asarray(data) # Ensure it's a NumPy array
+    taps = signal.firwin(num_taps, cutoff, fs=raw_fs, window="hamming")
+    return taps.astype(np.float32)
 
-    # Decimate along the time axis (axis=0)
-    downsampled_data = signal.decimate(data_np, factor, axis=0, ftype='fir', zero_phase=True)
-    
-    return downsampled_data
 
-def save_lfp_data(filename, lfp_data):
-    """Save LFP data to binary file"""
-    lfp_data.tofile(filename)
+def filter_chunk_centered(data, taps):
+    """Apply centered FIR convolution along time axis to samples x channels data."""
+    data = np.asarray(data, dtype=np.float32)
+    taps = np.asarray(taps, dtype=np.float32)
+    kernel = taps[:, None]
+
+    try:
+        return signal.oaconvolve(data, kernel, mode="same", axes=0).astype(np.float32)
+    except TypeError:
+        return signal.convolve(data, kernel, mode="same", method="fft").astype(np.float32)
+
+
+def aligned_lfp_indices(block_start, block_end, raw_fs, lfp_fs):
+    """Raw sample indices in [block_start, block_end) that land exactly on LFP ticks."""
+    factor = compute_downsample_factor(raw_fs, lfp_fs)
+    first = ((int(block_start) + factor - 1) // factor) * factor
+    if first >= block_end:
+        return np.empty(0, dtype=np.int64)
+    return np.arange(first, int(block_end), factor, dtype=np.int64)
+
+
+def to_int16(data):
+    """Round, clip, and convert filtered LFP data back to int16."""
+    return np.rint(np.clip(data, np.iinfo(np.int16).min, np.iinfo(np.int16).max)).astype(
+        np.int16
+    )

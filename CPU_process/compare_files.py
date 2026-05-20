@@ -659,7 +659,7 @@ def main():
     parser = argparse.ArgumentParser(description='Compare raw DAT and processed LFP files')
     parser.add_argument('dat_file', type=str, help='Path to the original .dat file')
     parser.add_argument('lfp_file', type=str, help='Path to the generated .lfp file')
-    parser.add_argument('--num-channels', type=int, default=385, help='Number of channels (default: 385)')
+    parser.add_argument('--num-channels', type=int, default=384, help='Number of channels (default: 384)')
     parser.add_argument('--num-samples', type=int, default=30000, help='Number of samples to compare (default: 30000)')
     parser.add_argument('--analysis', choices=['basic', 'detailed', 'frequency', 'all'], 
                       default='all', help='Type of analysis to perform (default: basic)')

@@ -145,10 +145,13 @@ def compare_signals_raw(dat_file, lfp_file, num_channels=384, num_samples=None):
     
     # Downsample raw data and compare
     for i, ch in enumerate(test_channels):
-        # Get the raw signal and downsample
+        # Get the raw signal and downsample with anti-aliasing
         raw_signal = raw_data[:, ch]
-        indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-        downsampled_raw = raw_signal[indices]
+        q = int(downsampling_factor)
+        if q > 1:
+            downsampled_raw = signal.decimate(raw_signal, q, ftype='fir', zero_phase=True)
+        else:
+            downsampled_raw = raw_signal
         
         # Trim to match sizes
         min_len = min(len(downsampled_raw), len(lfp_data[:, ch]))
@@ -214,9 +217,12 @@ def compare_signals_detailed(dat_file, lfp_file, num_channels=384, num_samples=N
     raw_signal = raw_data[:, channel]
     lfp_signal = lfp_data[:, channel]
     
-    # Downsample raw data
-    indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-    downsampled_raw = raw_signal[indices]
+    # Downsample raw data with anti-aliasing
+    q = int(downsampling_factor)
+    if q > 1:
+        downsampled_raw = signal.decimate(raw_signal, q, ftype='fir', zero_phase=True)
+    else:
+        downsampled_raw = raw_signal
     
     # Trim to match sizes
     min_len = min(len(downsampled_raw), len(lfp_signal))
@@ -348,9 +354,12 @@ def compare_frequency_bands(dat_file, lfp_file, num_channels=384, num_samples=No
     raw_signal = raw_data[:, channel]
     lfp_signal = lfp_data[:, channel]
     
-    # Downsample raw data
-    indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-    downsampled_raw = raw_signal[indices]
+    # Downsample raw data with anti-aliasing
+    q = int(downsampling_factor)
+    if q > 1:
+        downsampled_raw = signal.decimate(raw_signal, q, ftype='fir', zero_phase=True)
+    else:
+        downsampled_raw = raw_signal
     
     # Trim to match sizes
     min_len = min(len(downsampled_raw), len(lfp_signal))
@@ -471,10 +480,13 @@ def collect_correlations(dat_file, lfp_file, num_channels=384, num_samples=None,
     # Calculate correlations for each channel
     correlations = {}
     for ch in test_channels:
-        # Get the raw signal and downsample
+        # Get the raw signal and downsample with anti-aliasing
         raw_signal = raw_data[:, ch]
-        indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-        downsampled_raw = raw_signal[indices]
+        q = int(downsampling_factor)
+        if q > 1:
+            downsampled_raw = signal.decimate(raw_signal, q, ftype='fir', zero_phase=True)
+        else:
+            downsampled_raw = raw_signal
         
         # Trim to match sizes
         min_len = min(len(downsampled_raw), len(lfp_data[:, ch]))
@@ -526,9 +538,12 @@ def collect_detailed_metrics(dat_file, lfp_file, num_channels=384, num_samples=N
     raw_signal = raw_data[:, channel]
     lfp_signal = lfp_data[:, channel]
     
-    # Downsample raw data
-    indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-    downsampled_raw = raw_signal[indices]
+    # Downsample raw data with anti-aliasing
+    q = int(downsampling_factor)
+    if q > 1:
+        downsampled_raw = signal.decimate(raw_signal, q, ftype='fir', zero_phase=True)
+    else:
+        downsampled_raw = raw_signal
     
     # Trim to match sizes
     min_len = min(len(downsampled_raw), len(lfp_signal))
@@ -602,9 +617,12 @@ def collect_frequency_bands(dat_file, lfp_file, num_channels=384, num_samples=No
     raw_signal = raw_data[:, channel]
     lfp_signal = lfp_data[:, channel]
     
-    # Downsample raw data
-    indices = np.arange(0, len(raw_signal), downsampling_factor).astype(int)
-    downsampled_raw = raw_signal[indices]
+    # Downsample raw data with anti-aliasing
+    q = int(downsampling_factor)
+    if q > 1:
+        downsampled_raw = signal.decimate(raw_signal, q, ftype='fir', zero_phase=True)
+    else:
+        downsampled_raw = raw_signal
     
     # Trim to match sizes
     min_len = min(len(downsampled_raw), len(lfp_signal))
