@@ -95,7 +95,7 @@ def filter_data(data, fs, lowcut=0.5, highcut=300, order=4):
     filtered_data = signal.filtfilt(b, a, data)
     return filtered_data
 
-def compare_signals_raw(dat_file, lfp_file, num_channels=385, num_samples=None):
+def compare_signals_raw(dat_file, lfp_file, num_channels=384, num_samples=None):
     """
     Compare raw DAT file with processed LFP file.
     Simply downsample the raw data to match LFP sampling rate.
@@ -175,7 +175,7 @@ def compare_signals_raw(dat_file, lfp_file, num_channels=385, num_samples=None):
     plt.tight_layout()
     plt.show()
 
-def compare_signals_detailed(dat_file, lfp_file, num_channels=385, num_samples=None, channel=0):
+def compare_signals_detailed(dat_file, lfp_file, num_channels=384, num_samples=None, channel=0):
     """
     Perform detailed comparison between raw and processed LFP data for a single channel,
     including time-domain, frequency-domain and coherence analysis.
@@ -303,7 +303,7 @@ def compare_signals_detailed(dat_file, lfp_file, num_channels=385, num_samples=N
     plt.tight_layout()
     plt.show()
 
-def compare_frequency_bands(dat_file, lfp_file, num_channels=385, num_samples=None, channel=0):
+def compare_frequency_bands(dat_file, lfp_file, num_channels=384, num_samples=None, channel=0):
     """
     Compare power in specific frequency bands between raw and processed LFP data.
     
@@ -441,7 +441,7 @@ def compare_frequency_bands(dat_file, lfp_file, num_channels=385, num_samples=No
     plt.tight_layout()
     plt.show()
 
-def collect_correlations(dat_file, lfp_file, num_channels=385, num_samples=None, test_channels=None):
+def collect_correlations(dat_file, lfp_file, num_channels=384, num_samples=None, test_channels=None):
     """
     Collect correlations between raw and processed data for specific channels.
     
@@ -503,7 +503,7 @@ def collect_correlations(dat_file, lfp_file, num_channels=385, num_samples=None,
             
     return correlations
 
-def collect_detailed_metrics(dat_file, lfp_file, num_channels=385, num_samples=None, channel=0):
+def collect_detailed_metrics(dat_file, lfp_file, num_channels=384, num_samples=None, channel=0):
     """
     Collect detailed metrics for a specific channel.
     
@@ -572,7 +572,7 @@ def collect_detailed_metrics(dat_file, lfp_file, num_channels=385, num_samples=N
     
     return metrics
 
-def collect_frequency_bands(dat_file, lfp_file, num_channels=385, num_samples=None, channel=0):
+def collect_frequency_bands(dat_file, lfp_file, num_channels=384, num_samples=None, channel=0):
     """
     Collect frequency band power metrics for a specific channel.
     

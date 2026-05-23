@@ -1,13 +1,13 @@
 from src.extract_lfp import extract_lfp
+from src.config import INPUT_FILE, OUTPUT_FILE, CHUNK_SIZE, N_CHANNELS
 
 
 def main():
     # Define variables directly here (or edit src/config.py)
-    # Using defaults from config.py for now, but these can be overridden
-    input_file = r"/Volumes/Peter/ephys_data_mingze/MV03_2025-12-21_12-00-27/MV03_2025-12-21_12-00-27_ProbeB.dat"
-    output_file = r"/Volumes/Peter/ephys_data_mingze/MV03_2025-12-21_12-00-27/MV03_2025-12-21_12-00-27_ProbeB.lfp"
-    chunk_size = 550000000
-    num_channels = 384
+    input_file = INPUT_FILE
+    output_file = OUTPUT_FILE
+    chunk_size = CHUNK_SIZE
+    num_channels = N_CHANNELS
 
     extract_lfp(input_file, output_file, chunk_size, num_channels)
 

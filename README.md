@@ -10,8 +10,8 @@ Extracting LFP signals (typically < 500 Hz) from broadband neural recordings (of
 - Efficient down-sampling of raw data (e.g., 30 kHz to 1250 Hz)
 - Low-pass filtering to isolate LFP frequencies (e.g., < 450 Hz)
 - Chunk processing to handle large files without loading entirely into memory.
-- **GPU Path (`GPU_process`):** Uses CuPy for significant speedup (5-10x or more) on NVIDIA GPUs. Requires CUDA and CuPy installation. Filter state propagation ensures signal continuity between chunks.
-- **CPU Path (`CPU_process`):** Uses NumPy/SciPy for processing on standard CPUs. Handles chunk boundaries using data overlap to avoid artifacts.
+- **GPU Path (`GPU_process`):** Uses CuPy for significant speedup on NVIDIA GPUs. Requires CUDA and CuPy installation. Uses the same linear-phase FIR filter and sample alignment as the CPU path.
+- **CPU Path (`CPU_process`):** Uses NumPy/SciPy for processing on standard CPUs. Handles chunk boundaries with centered FIR filtering to avoid edge artifacts.
 - Progress tracking during extraction.
 - Includes validation scripts (`compare_files.py` in each directory) to compare extracted LFP with downsampled raw data.
 
@@ -20,17 +20,17 @@ Extracting LFP signals (typically < 500 Hz) from broadband neural recordings (of
 ### GPU Path (`GPU_process`)
 1.  **Reading Data:** Reads the input `.dat` file in chunks.
 2.  **GPU Transfer:** Transfers the data chunk to the GPU using CuPy.
-3.  **Filtering:** Each chunk is low-pass filtered on the GPU using a Butterworth filter implemented via `cupyx.scipy.signal`. Filter state (`zi`) is propagated between chunks to ensure signal continuity without explicit overlap handling in the main loop.
-4.  **Downsampling:** The filtered data is downsampled on the GPU to the target LFP sampling rate using `cupyx.scipy.signal.decimate`, which includes an anti-aliasing filter.
+3.  **Filtering:** Each chunk is low-pass filtered on the GPU using a linear-phase FIR filter implemented with `cupyx.scipy.signal`.
+4.  **Downsampling:** Globally aligned raw sample indices are selected at the target LFP sampling interval.
 5.  **CPU Transfer:** Transfers the processed LFP data back to the CPU.
 6.  **Writing Data:** The processed LFP data (as int16) is written to the output `.lfp` file.
 
 ### CPU Path (`CPU_process`)
 1.  **Reading Data:** Reads the input `.dat` file in chunks.
-2.  **Overlap:** To prevent filtering artifacts at chunk boundaries, a small overlap (e.g., 0.5 seconds of data) is read and processed between consecutive chunks.
-3.  **Filtering:** Each chunk (including overlap) is low-pass filtered using a Butterworth filter implemented via `scipy.signal`. Filter state can optionally be propagated.
-4.  **Downsampling:** The filtered data is downsampled to the target LFP sampling rate using `scipy.signal.decimate`, which includes an anti-aliasing filter.
-5.  **Overlap Removal:** The overlapping section (now downsampled) is removed from the beginning of the processed chunk before writing.
+2.  **Overlap:** Extra samples around each chunk are loaded to cover the FIR filter delay and avoid boundary artifacts.
+3.  **Filtering:** Each chunk is low-pass filtered using the same linear-phase FIR filter as the GPU path.
+4.  **Downsampling:** Globally aligned raw sample indices are selected at the target LFP sampling interval.
+5.  **Overlap Removal:** Only samples aligned to the current chunk are written.
 6.  **Writing Data:** The processed LFP data (as int16) is written to the output `.lfp` file.
 
 ## Project Structure
@@ -128,18 +128,9 @@ Navigate to the `GPU_process` directory:
 cd GPU_process
 ```
 
-Basic usage (uses defaults from `src/config.py`):
+Edit the variables in `run.py` or `src/config.py`, then run:
 ```bash
-python run.py --input_file path/to/your/input.dat --output_file path/to/your/output.lfp
-```
-
-Specify all options:
-```bash
-python run.py \
-  --input_file path/to/your/input.dat \
-  --output_file path/to/your/output.lfp \
-  --chunk_size 1073741824 \ # Chunk size in bytes (e.g., 1GB). Adjust based on GPU RAM.
-  --num_channels 385
+python run.py
 ```
 
 ### CPU Only Extraction (`CPU_process`)
@@ -149,29 +140,20 @@ Navigate to the `CPU_process` directory:
 cd CPU_process
 ```
 
-Basic usage (uses defaults from `src/config.py`):
+Edit the variables in `run.py` or `src/config.py`, then run:
 ```bash
-python run.py --input_file path/to/your/input.dat --output_file path/to/your/output.lfp
+python run.py
 ```
 
-Specify all options:
-```bash
-python run.py \
-  --input_file path/to/your/input.dat \
-  --output_file path/to/your/output.lfp \
-  --chunk_size 1073741824 \ # Chunk size in bytes (e.g., 1GB). Adjust based on system RAM.
-  --num_channels 385
-```
-
-### Command Line Options (Apply to both `run.py` scripts)
-- `--input_file`: Path to input raw data file (`.dat`) (required).
-- `--output_file`: Path for output LFP file (`.lfp`) (required).
-- `--chunk_size`: Processing chunk size in bytes. Must be divisible by `num_channels * 2`. (Default: `1073741824` (1GB)). Larger chunks can be faster but require more memory (System RAM for CPU, GPU RAM for GPU).
-- `--num_channels`: Number of channels in the recording (Default: `385`).
+### Run Configuration
+- `input_file`: Path to input raw data file (`.dat`).
+- `output_file`: Path for output LFP file (`.lfp`).
+- `chunk_size`: Processing chunk size in bytes. Must be divisible by `num_channels * 2`. Larger chunks can be faster but require more memory (system RAM for CPU, GPU RAM for GPU).
+- `num_channels`: Number of channels in the recording (default: `384`).
 
 ### Common Issues
 1.  **GPU Out of Memory (`GPU_process`)**:
-    *   Reduce `--chunk_size` (e.g., `536870912` for 512MB). **Ensure the new size is still divisible by `num_channels * 2`**.
+    *   Reduce `chunk_size` in `run.py` or `src/config.py` (e.g., `536870912` for 512MB). **Ensure the new size is still divisible by `num_channels * 2`**.
     *   Ensure no other processes are heavily using the GPU.
 2.  **File Not Found**:
     *   Use absolute paths for input/output files or ensure relative paths are correct from the directory you are running the script (`GPU_process` or `CPU_process`).
@@ -180,7 +162,7 @@ python run.py \
     *   Verify CUDA toolkit, NVIDIA driver, and CuPy versions are compatible. See CuPy installation guide.
     *   Ensure `cupy` is installed correctly in your environment.
     *   If errors persist and you cannot resolve them, use the CPU-only version by running the scripts in the `CPU_process` directory. The `GPU_process` scripts *require* a working CuPy installation.
-4.  **Chunk Size Divisibility**: Ensure `--chunk_size` is a multiple of `num_channels * 2` (bytes per frame). The scripts attempt to adjust this, but setting it correctly is best.
+4.  **Chunk Size Divisibility**: Ensure `chunk_size` is a multiple of `num_channels * 2` (bytes per frame). Setting it correctly preserves clean chunk boundaries.
 
 ## Configuration
 
@@ -195,10 +177,10 @@ CUTOFF_FREQUENCY = 450        # Hz (Low-pass filter cutoff)
 
 # Processing
 # IMPORTANT: CHUNK_SIZE must be divisible by N_CHANNELS * 2 (bytes per frame)
-CHUNK_SIZE = 1073741824 # Bytes (1GB) - Adjust based on GPU memory
-N_CHANNELS = 385        # Number of recording channels
+CHUNK_SIZE = 1073741900 # Bytes (~1GB), divisible by N_CHANNELS * 2
+N_CHANNELS = 384        # Number of recording channels
 
-# File Paths (can be overridden by command line args)
+# File Paths
 INPUT_FILE = "path/to/input.dat"
 OUTPUT_FILE = "path/to/output.lfp"
 ```
@@ -225,7 +207,7 @@ cd GPU_process  # or cd CPU_process
 Usage:
 ```bash
 python compare_files.py path/to/raw_data.dat path/to/processed_data.lfp \
-  --num-channels 385 \
+  --num-channels 384 \
   --num-samples 60000 \ # Number of raw samples to analyze
   --analysis detailed \ # 'basic', 'detailed', 'frequency', or 'all'
   --channel 10 \        # Channel index for detailed/frequency analysis
@@ -243,7 +225,7 @@ python compare_files.py path/to/raw_data.dat path/to/processed_data.lfp \
 *   **GPU vs CPU**: The `GPU_process` path offers substantial speedup if you have a compatible NVIDIA GPU and CuPy installed. The `CPU_process` path provides a reliable alternative.
     *   *Example:* On a system with an NVIDIA RTX A4000 GPU and an Intel i9-13900KF CPU, the GPU implementation was observed to be approximately **3.3 times faster** than the CPU implementation. Actual speedup will vary based on hardware specifics and data size.
 *   **Chunk Size**: Larger chunks reduce overhead but increase memory demand (GPU RAM for `GPU_process`, system RAM for `CPU_process`). Find the sweet spot for your hardware, **ensuring the chunk size is divisible by `num_channels * 2`**.
-*   **Overlap (`CPU_process` only)**: Larger overlap increases computation slightly but improves robustness against edge artifacts in the CPU version.
+*   **Chunk boundaries**: Both CPU and GPU paths load extra samples around each chunk to cover FIR filter delay and preserve alignment across boundaries.
 
 ## Contributing
 Contributions are welcome! If you find bugs, have suggestions, or want to add features (e.g., support for other file formats, different filter types), please feel free to:
