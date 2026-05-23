@@ -241,20 +241,21 @@ This project is licensed under the MIT License.
 
 If you use this software in your research, please cite it using the DOI provided below.
 
-**Example Citation (Version 1.0):**
+**Example Citation (Version v1.1.0):**
 
-> Dou, Mingze. (2025). LFP Extraction Toolkit for Electrophysiology Data (Version 1.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.15243756
+> Dou, Mingze. (2026). MingzeDou/LFP-extraction-electrophysiology: v1.1.0 (Version v1.1.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.20358833
 
 **BibTeX Entry:**
 
 ```bibtex
-@software{Dou_LFP_Extraction_2024_15243756,
+@software{Dou_LFP_Extraction_2026_20358833,
   author       = {Dou, Mingze},
-  title        = {{LFP Extraction Toolkit for Electrophysiology Data}},
-  month        = april, 
-  year         = 2025,
+  title        = {{MingzeDou/LFP-extraction-electrophysiology: v1.1.0}},
+  month        = may,
+  year         = 2026,
   publisher    = {Zenodo},
-  version      = {1.0},
-  doi          = {10.5281/zenodo.15243756},
-  url          = {https://doi.org/10.5281/zenodo.15243756}
+  version      = {v1.1.0},
+  doi          = {10.5281/zenodo.20358833},
+  url          = {https://doi.org/10.5281/zenodo.20358833}
 }
+```
