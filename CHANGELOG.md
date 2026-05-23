@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.1.0
 
 - Refactored CPU and GPU extraction to use matching linear-phase FIR filtering and globally aligned LFP sample indices.
 - Updated default channel count to 384 across extraction, validation, and documentation.
